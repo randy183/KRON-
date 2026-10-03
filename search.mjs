@@ -27,101 +27,238 @@ export default async (req) => {
         if (!subject || !question) {
             return new Response(
                 JSON.stringify({
-                    error: "Subject and question are required."
+                    error:
+                        "Subject and question are required."
                 }),
                 {
                     status: 400,
                     headers: {
-                        "Content-Type": "application/json"
+                        "Content-Type":
+                            "application/json"
                     }
                 }
             );
         }
 
-        const apiKey =
-            process.env.BRAVE_SEARCH_API_KEY;
-
-        if (!apiKey) {
-            return new Response(
-                JSON.stringify({
-                    error:
-                        "Search API key is not connected yet."
-                }),
-                {
-                    status: 500,
-                    headers: {
-                        "Content-Type": "application/json"
-                    }
-                }
-            );
-        }
+        // =========================
+        // 1. SEARCH THE WEB
+        // =========================
 
         const searchQuery =
             subject +
             " " +
             question +
-            " Nigerian secondary school WAEC";
+            " WAEC Nigeria";
 
-        const url =
-            "https://api.search.brave.com/res/v1/web/search" +
-            "?q=" +
+        const searchUrl =
+            "https://freeserp.ai/api.php" +
+            "?index=web" +
+            "&q=" +
             encodeURIComponent(searchQuery) +
-            "&count=8";
+            "&size=8";
 
-        const response = await fetch(url, {
-            headers: {
-                "Accept": "application/json",
-                "X-Subscription-Token": apiKey
-            }
-        });
+        const searchResponse =
+            await fetch(searchUrl);
 
-        if (!response.ok) {
-
+        if (!searchResponse.ok) {
             return new Response(
                 JSON.stringify({
                     error:
-                        "Web search failed."
+                        "FreeSerp web search failed."
                 }),
                 {
                     status: 502,
                     headers: {
-                        "Content-Type": "application/json"
+                        "Content-Type":
+                            "application/json"
                     }
                 }
             );
         }
 
-        const data =
-            await response.json();
+        const searchData =
+            await searchResponse.json();
+
+        const rawResults =
+            searchData.results ||
+            searchData.web ||
+            [];
 
         const results =
-            data.web &&
-            data.web.results
-                ? data.web.results.map(function(item) {
+            rawResults.map(function(item) {
 
-                    return {
-                        title:
-                            item.title || "",
+                return {
+                    title:
+                        item.title || "",
 
-                        snippet:
-                            item.description || "",
+                    snippet:
+                        item.snippet ||
+                        item.description ||
+                        "",
 
-                        url:
-                            item.url || ""
-                    };
+                    url:
+                        item.url || ""
+                };
+
+            });
+
+        // =========================
+        // 2. GET OPENROUTER KEY
+        // =========================
+
+        const apiKey =
+            process.env.OPENROUTER_API_KEY;
+
+        if (!apiKey) {
+            return new Response(
+                JSON.stringify({
+                    error:
+                        "OpenRouter API key is missing."
+                }),
+                {
+                    status: 500,
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    }
+                }
+            );
+        }
+
+        // =========================
+        // 3. PREPARE WEB RESULTS
+        // =========================
+
+        const sourceText =
+            results
+                .map(function(item, index) {
+
+                    return (
+                        (index + 1) +
+                        ". " +
+                        item.title +
+                        "\n" +
+                        item.snippet +
+                        "\n" +
+                        item.url
+                    );
 
                 })
-                : [];
+                .join("\n\n");
+
+        // =========================
+        // 4. ASK OPENROUTER
+        // =========================
+
+        const aiResponse =
+            await fetch(
+                "https://openrouter.ai/api/v1/chat/completions",
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Authorization":
+                            "Bearer " + apiKey,
+
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body: JSON.stringify({
+
+                        model:
+                            "openai/gpt-oss-20b:free",
+
+                        messages: [
+
+                            {
+                                role: "system",
+
+                                content:
+                                    "You are KRON Study AI, a helpful Nigerian secondary-school study assistant. " +
+                                    "Use the supplied web search results to answer the student's question accurately. " +
+                                    "Explain concepts clearly and simply. " +
+                                    "Do not invent information when the sources do not provide enough evidence."
+                            },
+
+                            {
+                                role: "user",
+
+                                content:
+                                    "Subject: " +
+                                    subject +
+                                    "\n\nQuestion: " +
+                                    question +
+                                    "\n\nWeb search results:\n" +
+                                    sourceText
+                            }
+
+                        ]
+
+                    })
+                }
+            );
+
+        if (!aiResponse.ok) {
+
+            const errorText =
+                await aiResponse.text();
+
+            return new Response(
+                JSON.stringify({
+                    error:
+                        "OpenRouter request failed.",
+
+                    details:
+                        errorText
+                }),
+                {
+                    status: 502,
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    }
+                }
+            );
+        }
+
+        // =========================
+        // 5. GET AI ANSWER
+        // =========================
+
+        const aiData =
+            await aiResponse.json();
+
+        const answer =
+            aiData.choices?.[0]?.message?.content ||
+            "KRON could not generate an answer.";
+
+        // =========================
+        // 6. SEND BACK TO KRON
+        // =========================
 
         return new Response(
             JSON.stringify({
-                subject: subject,
-                results: results
+
+                subject:
+                    subject,
+
+                question:
+                    question,
+
+                answer:
+                    answer,
+
+                results:
+                    results
+
             }),
             {
                 status: 200,
+
                 headers: {
-                    "Content-Type": "application/json"
+                    "Content-Type":
+                        "application/json"
                 }
             }
         );
@@ -130,16 +267,24 @@ export default async (req) => {
 
         return new Response(
             JSON.stringify({
+
                 error:
-                    "Something went wrong while searching the web."
+                    "Something went wrong.",
+
+                details:
+                    error.message
+
             }),
             {
                 status: 500,
+
                 headers: {
-                    "Content-Type": "application/json"
+                    "Content-Type":
+                        "application/json"
                 }
             }
         );
+
     }
 };
 
